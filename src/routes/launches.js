@@ -4,6 +4,7 @@ const { Prisma } = require('@prisma/client');
 const { prisma } = require('../lib/prisma');
 const { authMiddleware } = require('../middleware/auth');
 const {
+  parseInteger,
   parsePositiveInt,
   serializeLaunch,
   serializePurchase,
@@ -178,8 +179,8 @@ router.put('/:id', authMiddleware, handleAsync(async (req, res) => {
             .sort((a, b) => Number(a.minAmount) - Number(b.minAmount))
             .map((tier) => ({
               launchId: launch.id,
-              minAmount: Number.parseInt(tier.minAmount, 10),
-              maxAmount: Number.parseInt(tier.maxAmount, 10),
+              minAmount: parseInteger(tier.minAmount),
+              maxAmount: parseInteger(tier.maxAmount),
               pricePerToken: new Prisma.Decimal(tier.pricePerToken)
             }))
         });
@@ -195,15 +196,15 @@ router.put('/:id', authMiddleware, handleAsync(async (req, res) => {
         await tx.launchVesting.upsert({
           where: { launchId: launch.id },
           update: {
-            cliffDays: Number.parseInt(req.body.vesting.cliffDays, 10),
-            vestingDays: Number.parseInt(req.body.vesting.vestingDays, 10),
-            tgePercent: Number.parseInt(req.body.vesting.tgePercent, 10)
+            cliffDays: parseInteger(req.body.vesting.cliffDays),
+            vestingDays: parseInteger(req.body.vesting.vestingDays),
+            tgePercent: parseInteger(req.body.vesting.tgePercent)
           },
           create: {
             launchId: launch.id,
-            cliffDays: Number.parseInt(req.body.vesting.cliffDays, 10),
-            vestingDays: Number.parseInt(req.body.vesting.vestingDays, 10),
-            tgePercent: Number.parseInt(req.body.vesting.tgePercent, 10)
+            cliffDays: parseInteger(req.body.vesting.cliffDays),
+            vestingDays: parseInteger(req.body.vesting.vestingDays),
+            tgePercent: parseInteger(req.body.vesting.tgePercent)
           }
         });
       }
@@ -240,8 +241,19 @@ router.post('/:id/whitelist', authMiddleware, handleAsync(async (req, res) => {
     ? [...new Set(req.body.addresses.map((address) => String(address).trim()).filter(Boolean))]
     : null;
 
-  if (!addresses || addresses.length === 0) {
-    return res.status(400).json({ error: 'addresses must be a non-empty array' });
+  if (!addresses) {
+    return res.status(400).json({ error: 'addresses must be an array' });
+  }
+
+  if (addresses.length === 0) {
+    const total = await prisma.whitelistEntry.count({
+      where: { launchId: launch.id }
+    });
+
+    return res.status(200).json({
+      added: 0,
+      total
+    });
   }
 
   const createResult = await prisma.whitelistEntry.createMany({
@@ -333,8 +345,8 @@ router.post('/:id/referrals', authMiddleware, handleAsync(async (req, res) => {
   }
 
   const { code } = req.body || {};
-  const discountPercent = Number.parseInt(req.body?.discountPercent, 10);
-  const maxUses = Number.parseInt(req.body?.maxUses, 10);
+  const discountPercent = parseInteger(req.body?.discountPercent);
+  const maxUses = parseInteger(req.body?.maxUses);
 
   if (!String(code || '').trim() || !Number.isInteger(discountPercent) || !Number.isInteger(maxUses) || discountPercent < 0 || discountPercent > 100 || maxUses <= 0) {
     return res.status(400).json({ error: 'code, discountPercent, and maxUses are required' });
@@ -400,7 +412,7 @@ router.post('/:id/purchase', authMiddleware, handleAsync(async (req, res) => {
   const normalizedWalletAddress = String(walletAddress || '').trim();
   const normalizedTxSignature = String(txSignature || '').trim();
   const normalizedReferralCode = String(referralCode || '').trim();
-  const parsedAmount = Number.parseInt(amount, 10);
+  const parsedAmount = parseInteger(amount);
 
   if (!normalizedWalletAddress || !normalizedTxSignature || !Number.isInteger(parsedAmount) || parsedAmount <= 0) {
     return res.status(400).json({ error: 'walletAddress, amount, and txSignature are required' });

@@ -2,8 +2,26 @@ const { Prisma } = require('@prisma/client');
 
 const VALID_STATUSES = new Set(['UPCOMING', 'ACTIVE', 'ENDED', 'SOLD_OUT']);
 
+function parseInteger(value) {
+  if (typeof value === 'number') {
+    return Number.isInteger(value) ? value : null;
+  }
+
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const normalized = value.trim();
+  if (!/^-?\d+$/.test(normalized)) {
+    return null;
+  }
+
+  const parsed = Number(normalized);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
 function parsePositiveInt(value) {
-  const parsed = Number.parseInt(value, 10);
+  const parsed = parseInteger(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
@@ -116,14 +134,14 @@ function validateLaunchPayload(payload, { partial = false } = {}) {
   }
 
   if (payload.totalSupply !== undefined) {
-    const totalSupply = Number.parseInt(payload.totalSupply, 10);
+    const totalSupply = parseInteger(payload.totalSupply);
     if (!Number.isInteger(totalSupply) || totalSupply <= 0) {
       return 'totalSupply must be a positive integer';
     }
   }
 
   if (payload.maxPerWallet !== undefined) {
-    const maxPerWallet = Number.parseInt(payload.maxPerWallet, 10);
+    const maxPerWallet = parseInteger(payload.maxPerWallet);
     if (!Number.isInteger(maxPerWallet) || maxPerWallet <= 0) {
       return 'maxPerWallet must be a positive integer';
     }
@@ -168,8 +186,8 @@ function validateLaunchPayload(payload, { partial = false } = {}) {
         return 'each tier requires minAmount, maxAmount, and pricePerToken';
       }
 
-      const minAmount = Number.parseInt(tier.minAmount, 10);
-      const maxAmount = Number.parseInt(tier.maxAmount, 10);
+      const minAmount = parseInteger(tier.minAmount);
+      const maxAmount = parseInteger(tier.maxAmount);
 
       if (!Number.isInteger(minAmount) || !Number.isInteger(maxAmount) || minAmount < 0 || maxAmount <= minAmount) {
         return 'tier minAmount and maxAmount must define a valid positive range';
@@ -193,9 +211,9 @@ function validateLaunchPayload(payload, { partial = false } = {}) {
   }
 
   if (payload.vesting !== undefined && payload.vesting !== null) {
-    const cliffDays = Number.parseInt(payload.vesting.cliffDays, 10);
-    const vestingDays = Number.parseInt(payload.vesting.vestingDays, 10);
-    const tgePercent = Number.parseInt(payload.vesting.tgePercent, 10);
+    const cliffDays = parseInteger(payload.vesting.cliffDays);
+    const vestingDays = parseInteger(payload.vesting.vestingDays);
+    const tgePercent = parseInteger(payload.vesting.tgePercent);
 
     if (
       Number.isNaN(cliffDays) ||
@@ -226,19 +244,19 @@ function buildLaunchCreateInput(payload, creatorId) {
     creatorId,
     name: payload.name.trim(),
     symbol: payload.symbol.trim().toUpperCase(),
-    totalSupply: Number.parseInt(payload.totalSupply, 10),
+    totalSupply: parseInteger(payload.totalSupply),
     pricePerToken: new Prisma.Decimal(payload.pricePerToken),
     startsAt: new Date(payload.startsAt),
     endsAt: new Date(payload.endsAt),
-    maxPerWallet: Number.parseInt(payload.maxPerWallet, 10),
+    maxPerWallet: parseInteger(payload.maxPerWallet),
     description: payload.description.trim(),
     tiers: payload.tiers
       ? {
           create: [...payload.tiers]
             .sort((a, b) => Number(a.minAmount) - Number(b.minAmount))
             .map((tier) => ({
-              minAmount: Number.parseInt(tier.minAmount, 10),
-              maxAmount: Number.parseInt(tier.maxAmount, 10),
+              minAmount: parseInteger(tier.minAmount),
+              maxAmount: parseInteger(tier.maxAmount),
               pricePerToken: new Prisma.Decimal(tier.pricePerToken)
             }))
         }
@@ -246,9 +264,9 @@ function buildLaunchCreateInput(payload, creatorId) {
     vesting: payload.vesting
       ? {
           create: {
-            cliffDays: Number.parseInt(payload.vesting.cliffDays, 10),
-            vestingDays: Number.parseInt(payload.vesting.vestingDays, 10),
-            tgePercent: Number.parseInt(payload.vesting.tgePercent, 10)
+            cliffDays: parseInteger(payload.vesting.cliffDays),
+            vestingDays: parseInteger(payload.vesting.vestingDays),
+            tgePercent: parseInteger(payload.vesting.tgePercent)
           }
         }
       : undefined
@@ -267,7 +285,7 @@ function buildLaunchUpdateInput(payload) {
   }
 
   if (payload.totalSupply !== undefined) {
-    data.totalSupply = Number.parseInt(payload.totalSupply, 10);
+    data.totalSupply = parseInteger(payload.totalSupply);
   }
 
   if (payload.pricePerToken !== undefined) {
@@ -283,7 +301,7 @@ function buildLaunchUpdateInput(payload) {
   }
 
   if (payload.maxPerWallet !== undefined) {
-    data.maxPerWallet = Number.parseInt(payload.maxPerWallet, 10);
+    data.maxPerWallet = parseInteger(payload.maxPerWallet);
   }
 
   if (payload.description !== undefined) {
@@ -302,9 +320,8 @@ function getStatusFilter(status) {
   return VALID_STATUSES.has(normalized) ? normalized : null;
 }
 
-function calculateTieredCost(amount, basePricePerToken, tiers, amountSoldBeforePurchase = 0) {
+function calculateTieredCost(amount, basePricePerToken, tiers) {
   let remaining = amount;
-  let soldCursor = amountSoldBeforePurchase;
   let totalCost = new Prisma.Decimal(0);
   const sortedTiers = [...tiers].sort((a, b) => a.minAmount - b.minAmount);
 
@@ -313,22 +330,16 @@ function calculateTieredCost(amount, basePricePerToken, tiers, amountSoldBeforeP
       break;
     }
 
-    if (soldCursor >= tier.maxAmount) {
+    const capacity = Math.max(tier.maxAmount - tier.minAmount, 0);
+    if (capacity <= 0) {
       continue;
     }
 
-    const tierStart = Math.max(soldCursor, tier.minAmount);
-    if (tierStart >= tier.maxAmount) {
-      continue;
-    }
-
-    const capacity = tier.maxAmount - tierStart;
     const fillAmount = Math.min(remaining, capacity);
 
     if (fillAmount > 0) {
       totalCost = totalCost.plus(new Prisma.Decimal(fillAmount).mul(tier.pricePerToken));
       remaining -= fillAmount;
-      soldCursor += fillAmount;
     }
   }
 
@@ -392,6 +403,7 @@ function computeVestingState(launch, totalPurchased, now = new Date()) {
 
 module.exports = {
   VALID_STATUSES,
+  parseInteger,
   parsePositiveInt,
   serializeLaunch,
   serializePurchase,
